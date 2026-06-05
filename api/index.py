@@ -7,7 +7,7 @@ from fastapi.responses import JSONResponse
 from telegram import Update
 from telegram.ext import Application
 
-from bot.config import BOT_TOKEN, APP_URL
+from bot.config import BOT_TOKEN
 from bot.handlers import register_handlers
 
 logging.basicConfig(
@@ -42,13 +42,24 @@ async def shutdown():
         logger.info("Bot application stopped")
 
 
+def get_base_url(request: Request = None) -> str:
+    url = os.environ.get("APP_URL", "")
+    if not url and request:
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
+        proto = request.headers.get("x-forwarded-proto", "https")
+        url = f"{proto}://{host}"
+    return url.rstrip("/")
+
+
 @app.get("/")
-async def root():
-    webhook_url = f"{APP_URL}/api" if APP_URL else "?"
+async def root(request: Request):
+    base = get_base_url(request)
     return {
         "status": "running",
         "bot": "za-bot-teletaks",
-        "webhook": webhook_url,
+        "webhook_url": f"{base}/api",
+        "set_webhook": f"{base}/api/setwebhook",
+        "webhook_info": f"{base}/api/info",
     }
 
 
@@ -72,12 +83,11 @@ async def webhook_alt(request: Request):
 
 
 @app.get("/setwebhook")
-async def set_webhook():
-    if not APP_URL:
-        return {"ok": False, "error": "APP_URL tidak ditemukan di environment"}
+async def set_webhook(request: Request):
     try:
+        base = get_base_url(request)
         tg_app = await get_bot_app()
-        url = f"{APP_URL}/api"
+        url = f"{base}/api"
         result = await tg_app.bot.set_webhook(url=url)
         return {"ok": result, "webhook_url": url}
     except Exception as e:
