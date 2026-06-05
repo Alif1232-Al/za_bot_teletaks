@@ -1,14 +1,8 @@
 import os
+import json
 import logging
-
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse
-
-from telegram import Update
-from telegram.ext import Application
-
-from bot.config import BOT_TOKEN
-from bot.handlers import register_handlers
+from http.server import BaseHTTPRequestHandler
+from urllib.parse import urlparse
 
 logging.basicConfig(
     level=logging.INFO,
@@ -16,140 +10,156 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-app = FastAPI(title="za-bot-teletaks")
-telegram_app: Application | None = None
+BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+APP_URL = os.environ.get("APP_URL", "")
+
+_telegram_app = None
 
 
-async def get_bot_app() -> Application:
-    global telegram_app
-    if telegram_app is None:
-        if not BOT_TOKEN:
-            raise ValueError("BOT_TOKEN tidak ditemukan. Set di environment variables.")
-        telegram_app = Application.builder().token(BOT_TOKEN).build()
-        register_handlers(telegram_app)
-        await telegram_app.initialize()
-        await telegram_app.start()
-        logger.info("Bot application initialized")
-    return telegram_app
+async def get_telegram_app():
+    global _telegram_app
+    if _telegram_app is None:
+        from telegram.ext import Application
+        from bot.handlers import register_handlers
+
+        _telegram_app = Application.builder().token(BOT_TOKEN).build()
+        register_handlers(_telegram_app)
+        await _telegram_app.initialize()
+        await _telegram_app.start()
+        logger.info("Telegram app initialized")
+    return _telegram_app
 
 
-@app.on_event("shutdown")
-async def shutdown():
-    global telegram_app
-    if telegram_app:
-        await telegram_app.stop()
-        await telegram_app.shutdown()
-        logger.info("Bot application stopped")
+class handler(BaseHTTPRequestHandler):
+    def do_GET(self):
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/") or "/"
 
+        logger.info(f"GET {path}")
 
-def get_base_url(request: Request) -> str:
-    url = os.environ.get("APP_URL", "")
-    if not url:
-        host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
-        proto = request.headers.get("x-forwarded-proto", "https")
-        url = f"{proto}://{host}"
-    return url.rstrip("/")
+        if path in ("/", "/api"):
+            self.send_json(200, {
+                "status": "running",
+                "bot": "za-bot-teletaks",
+                "set_webhook": f"{APP_URL}/api/setwebhook",
+                "webhook_info": f"{APP_URL}/api/info",
+            })
+        elif path in ("/setwebhook", "/api/setwebhook"):
+            self.handle_set_webhook()
+        elif path in ("/deletewebhook", "/api/deletewebhook"):
+            self.handle_delete_webhook()
+        elif path in ("/info", "/api/info"):
+            self.handle_webhook_info()
+        else:
+            self.send_json(404, {"detail": "Not Found", "path": path})
 
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        path = parsed.path.rstrip("/") or "/"
 
-async def handle_root(request: Request):
-    base = get_base_url(request)
-    return {
-        "status": "running",
-        "bot": "za-bot-teletaks",
-        "webhook_url": f"{base}/api",
-        "set_webhook": f"{base}/api/setwebhook",
-        "webhook_info": f"{base}/api/info",
-    }
+        content_length = int(self.headers.get("Content-Length", 0))
+        body = self.rfile.read(content_length)
 
+        logger.info(f"POST {path}")
 
-async def handle_webhook(request: Request):
-    try:
-        body = await request.json()
-        logger.info(f"Received update_id: {body.get('update_id')}")
-        tg_app = await get_bot_app()
-        update = Update.de_json(body, tg_app.bot)
-        await tg_app.process_update(update)
-        return {"ok": True}
-    except Exception as e:
-        logger.error(f"Webhook error: {e}", exc_info=True)
-        raise
+        if path in ("/", "/api", "/webhook", "/api/webhook"):
+            self.handle_webhook(body)
+        else:
+            self.send_json(404, {"detail": "Not Found", "path": path})
 
+    def send_json(self, status, data):
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.end_headers()
+        self.wfile.write(json.dumps(data).encode("utf-8"))
 
-async def handle_set_webhook(request: Request):
-    try:
-        base = get_base_url(request)
-        tg_app = await get_bot_app()
-        url = f"{base}/api"
-        result = await tg_app.bot.set_webhook(url=url)
-        return {"ok": result, "webhook_url": url}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+    def handle_webhook(self, body):
+        import asyncio
 
+        try:
+            data = json.loads(body)
+            logger.info(f"Webhook update_id: {data.get('update_id')}")
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self._process_update(data))
+            loop.close()
+            self.send_json(200, {"ok": True})
+        except Exception as e:
+            logger.error(f"Webhook error: {e}", exc_info=True)
+            self.send_json(500, {"ok": False, "error": str(e)[:200]})
 
-async def handle_delete_webhook():
-    try:
-        tg_app = await get_bot_app()
-        result = await tg_app.bot.delete_webhook()
-        return {"ok": result}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+    async def _process_update(self, data):
+        from telegram import Update
 
+        app = await get_telegram_app()
+        update = Update.de_json(data, app.bot)
+        await app.process_update(update)
 
-async def handle_webhook_info():
-    try:
-        tg_app = await get_bot_app()
-        info = await tg_app.bot.get_webhook_info()
-        return {
+    def handle_set_webhook(self):
+        import asyncio
+
+        try:
+            base = APP_URL
+            if not base:
+                host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host", "")
+                proto = self.headers.get("X-Forwarded-Proto", "https")
+                base = f"{proto}://{host}"
+
+            url = f"{base}/api"
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self._set_webhook(url))
+            loop.close()
+        except Exception as e:
+            logger.error(f"Set webhook error: {e}")
+            self.send_json(500, {"ok": False, "error": str(e)[:200]})
+
+    async def _set_webhook(self, url):
+        app = await get_telegram_app()
+        result = await app.bot.set_webhook(url=url)
+        self.send_json(200, {"ok": result, "webhook_url": url})
+
+    def handle_delete_webhook(self):
+        import asyncio
+
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self._delete_webhook())
+            loop.close()
+        except Exception as e:
+            logger.error(f"Delete webhook error: {e}")
+            self.send_json(500, {"ok": False, "error": str(e)[:200]})
+
+    async def _delete_webhook(self):
+        app = await get_telegram_app()
+        result = await app.bot.delete_webhook()
+        self.send_json(200, {"ok": result})
+
+    def handle_webhook_info(self):
+        import asyncio
+
+        try:
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            loop.run_until_complete(self._webhook_info())
+            loop.close()
+        except Exception as e:
+            logger.error(f"Webhook info error: {e}")
+            self.send_json(500, {"ok": False, "error": str(e)[:200]})
+
+    async def _webhook_info(self):
+        app = await get_telegram_app()
+        info = await app.bot.get_webhook_info()
+        self.send_json(200, {
             "url": info.url,
-            "has_custom_certificate": info.has_custom_certificate,
             "pending_update_count": info.pending_update_count,
-            "last_error_date": info.last_error_date,
             "last_error_message": info.last_error_message,
-            "max_connections": info.max_connections,
-            "ip_address": info.ip_address,
-        }
-    except Exception as e:
-        return {"ok": False, "error": str(e)}
+        })
 
+    def log_message(self, format, *args):
+        logger.info(f"{self.command} {self.path} - {args[0] if args else ''}")
 
-ROUTES = {
-    "GET": {
-        "/": handle_root,
-        "/api": handle_root,
-        "/setwebhook": handle_set_webhook,
-        "/api/setwebhook": handle_set_webhook,
-        "/deletewebhook": handle_delete_webhook,
-        "/api/deletewebhook": handle_delete_webhook,
-        "/info": handle_webhook_info,
-        "/api/info": handle_webhook_info,
-    },
-    "POST": {
-        "/": handle_webhook,
-        "/api": handle_webhook,
-        "/webhook": handle_webhook,
-        "/api/webhook": handle_webhook,
-    },
-}
-
-
-@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "HEAD"])
-async def catch_all(path: str, request: Request):
-    full_path = f"/{path}".rstrip("/") or "/"
-
-    logger.info(f"Request: {request.method} path=/{path} full_path={full_path}")
-
-    method_routes = ROUTES.get(request.method, {})
-    handler = method_routes.get(full_path)
-
-    if handler:
-        result = await handler(request)
-        return JSONResponse(content=result)
-
-    return JSONResponse(
-        content={
-            "detail": "Not Found",
-            "method": request.method,
-            "received_path": full_path,
-        },
-        status_code=404,
-    )
+    def do_OPTIONS(self):
+        self.send_json(200, {"ok": True})
