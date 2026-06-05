@@ -42,7 +42,17 @@ async def shutdown():
         logger.info("Bot application stopped")
 
 
-@app.post("/api/bot")
+@app.get("/")
+async def root():
+    webhook_url = f"{APP_URL}/api" if APP_URL else "?"
+    return {
+        "status": "running",
+        "bot": "za-bot-teletaks",
+        "webhook": webhook_url,
+    }
+
+
+@app.post("/")
 async def webhook(request: Request):
     try:
         body = await request.json()
@@ -56,32 +66,47 @@ async def webhook(request: Request):
         return JSONResponse(content={"ok": False, "error": str(e)}, status_code=500)
 
 
-@app.get("/api/bot")
-async def index():
-    return {
-        "status": "running",
-        "message": "za-bot-teletaks Telegram Bot is active",
-    }
+@app.post("/webhook")
+async def webhook_alt(request: Request):
+    return await webhook(request)
 
 
-@app.get("/api/bot/setwebhook")
+@app.get("/setwebhook")
 async def set_webhook():
     if not APP_URL:
         return {"ok": False, "error": "APP_URL tidak ditemukan di environment"}
     try:
         tg_app = await get_bot_app()
-        url = f"{APP_URL}/api/bot"
+        url = f"{APP_URL}/api"
         result = await tg_app.bot.set_webhook(url=url)
         return {"ok": result, "webhook_url": url}
     except Exception as e:
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/api/bot/deletewebhook")
+@app.get("/deletewebhook")
 async def delete_webhook():
     try:
         tg_app = await get_bot_app()
         result = await tg_app.bot.delete_webhook()
         return {"ok": result}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+@app.get("/info")
+async def webhook_info():
+    try:
+        tg_app = await get_bot_app()
+        info = await tg_app.bot.get_webhook_info()
+        return {
+            "url": info.url,
+            "has_custom_certificate": info.has_custom_certificate,
+            "pending_update_count": info.pending_update_count,
+            "last_error_date": info.last_error_date,
+            "last_error_message": info.last_error_message,
+            "max_connections": info.max_connections,
+            "ip_address": info.ip_address,
+        }
     except Exception as e:
         return {"ok": False, "error": str(e)}
