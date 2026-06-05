@@ -51,7 +51,7 @@ def get_base_url(request: Request = None) -> str:
     return url.rstrip("/")
 
 
-@app.get("/")
+@app.get("/api")
 async def root(request: Request):
     base = get_base_url(request)
     return {
@@ -63,7 +63,7 @@ async def root(request: Request):
     }
 
 
-@app.post("/")
+@app.post("/api")
 async def webhook(request: Request):
     try:
         body = await request.json()
@@ -77,12 +77,12 @@ async def webhook(request: Request):
         return JSONResponse(content={"ok": False, "error": str(e)}, status_code=500)
 
 
-@app.post("/webhook")
+@app.post("/api/webhook")
 async def webhook_alt(request: Request):
     return await webhook(request)
 
 
-@app.get("/setwebhook")
+@app.get("/api/setwebhook")
 async def set_webhook(request: Request):
     try:
         base = get_base_url(request)
@@ -94,7 +94,7 @@ async def set_webhook(request: Request):
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/deletewebhook")
+@app.get("/api/deletewebhook")
 async def delete_webhook():
     try:
         tg_app = await get_bot_app()
@@ -104,7 +104,7 @@ async def delete_webhook():
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/info")
+@app.get("/api/info")
 async def webhook_info():
     try:
         tg_app = await get_bot_app()
