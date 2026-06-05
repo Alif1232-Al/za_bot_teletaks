@@ -42,17 +42,16 @@ async def shutdown():
         logger.info("Bot application stopped")
 
 
-def get_base_url(request: Request = None) -> str:
+def get_base_url(request: Request) -> str:
     url = os.environ.get("APP_URL", "")
-    if not url and request:
+    if not url:
         host = request.headers.get("x-forwarded-host") or request.headers.get("host", "")
         proto = request.headers.get("x-forwarded-proto", "https")
         url = f"{proto}://{host}"
     return url.rstrip("/")
 
 
-@app.get("/api")
-async def root(request: Request):
+async def handle_root(request: Request):
     base = get_base_url(request)
     return {
         "status": "running",
@@ -63,27 +62,20 @@ async def root(request: Request):
     }
 
 
-@app.post("/api")
-async def webhook(request: Request):
+async def handle_webhook(request: Request):
     try:
         body = await request.json()
         logger.info(f"Received update_id: {body.get('update_id')}")
         tg_app = await get_bot_app()
         update = Update.de_json(body, tg_app.bot)
         await tg_app.process_update(update)
-        return JSONResponse(content={"ok": True})
+        return {"ok": True}
     except Exception as e:
         logger.error(f"Webhook error: {e}", exc_info=True)
-        return JSONResponse(content={"ok": False, "error": str(e)}, status_code=500)
+        raise
 
 
-@app.post("/api/webhook")
-async def webhook_alt(request: Request):
-    return await webhook(request)
-
-
-@app.get("/api/setwebhook")
-async def set_webhook(request: Request):
+async def handle_set_webhook(request: Request):
     try:
         base = get_base_url(request)
         tg_app = await get_bot_app()
@@ -94,8 +86,7 @@ async def set_webhook(request: Request):
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/api/deletewebhook")
-async def delete_webhook():
+async def handle_delete_webhook():
     try:
         tg_app = await get_bot_app()
         result = await tg_app.bot.delete_webhook()
@@ -104,8 +95,7 @@ async def delete_webhook():
         return {"ok": False, "error": str(e)}
 
 
-@app.get("/api/info")
-async def webhook_info():
+async def handle_webhook_info():
     try:
         tg_app = await get_bot_app()
         info = await tg_app.bot.get_webhook_info()
@@ -120,3 +110,46 @@ async def webhook_info():
         }
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
+
+ROUTES = {
+    "GET": {
+        "/": handle_root,
+        "/api": handle_root,
+        "/setwebhook": handle_set_webhook,
+        "/api/setwebhook": handle_set_webhook,
+        "/deletewebhook": handle_delete_webhook,
+        "/api/deletewebhook": handle_delete_webhook,
+        "/info": handle_webhook_info,
+        "/api/info": handle_webhook_info,
+    },
+    "POST": {
+        "/": handle_webhook,
+        "/api": handle_webhook,
+        "/webhook": handle_webhook,
+        "/api/webhook": handle_webhook,
+    },
+}
+
+
+@app.api_route("/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "HEAD"])
+async def catch_all(path: str, request: Request):
+    full_path = f"/{path}".rstrip("/") or "/"
+
+    logger.info(f"Request: {request.method} path=/{path} full_path={full_path}")
+
+    method_routes = ROUTES.get(request.method, {})
+    handler = method_routes.get(full_path)
+
+    if handler:
+        result = await handler(request)
+        return JSONResponse(content=result)
+
+    return JSONResponse(
+        content={
+            "detail": "Not Found",
+            "method": request.method,
+            "received_path": full_path,
+        },
+        status_code=404,
+    )
