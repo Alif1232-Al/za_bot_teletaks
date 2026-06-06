@@ -14,8 +14,8 @@ from telegram.ext import (
     ContextTypes,
 )
 
-from bot.tiktok import is_tiktok_url, download_tiktok_video
-from bot.twitter import is_twitter_url, download_twitter_video
+from bot.tiktok import is_tiktok_url, get_tiktok_video_url
+from bot.twitter import is_twitter_url, get_twitter_video_url
 from bot.pdf_tools import pdf_to_word, word_to_pdf
 from bot.remove_bg import remove_background
 from bot.ocr import ocr_image
@@ -327,24 +327,26 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def download_and_send(
     update: Update, context: ContextTypes.DEFAULT_TYPE, url: str, source: str
 ):
-    msg = await update.message.reply_text(f"Mendownload dari {source}...")
+    msg = await update.message.reply_text(f"Mendapatkan video dari {source}...")
     try:
         if source == "tiktok":
-            video_bytes = await download_tiktok_video(url)
+            video_url = await get_tiktok_video_url(url)
         else:
-            video_bytes = await download_twitter_video(url)
+            video_url = await get_twitter_video_url(url)
 
-        if video_bytes:
-            await update.message.reply_video(
-                video=BytesIO(video_bytes),
-                caption=f"✅ Download dari {source} berhasil!",
-                supports_streaming=True,
-            )
-        else:
+        if not video_url:
             await msg.edit_text(
-                f"Gagal mendownload video dari {source}. "
+                f"Gagal mendapatkan video dari {source}. "
                 "Mungkin URL tidak valid atau video bersifat private."
             )
+            return
+
+        await update.message.reply_video(
+            video=video_url,
+            caption=f"✅ Video dari {source} berhasil!",
+            supports_streaming=True,
+        )
+        await msg.delete()
     except Exception as e:
         logger.error(f"Download error ({source}): {e}")
         await msg.edit_text(f"Error: {str(e)[:200]}")

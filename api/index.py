@@ -3,7 +3,6 @@ import os
 import sys
 import logging
 import asyncio
-from urllib.parse import urlparse
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -40,20 +39,31 @@ async def process_webhook(data):
 
 
 async def set_webhook_async(base_url):
-    app = await get_telegram_app()
+    from telegram import Bot
+
+    bot = Bot(token=BOT_TOKEN)
     url = f"{base_url}/api"
-    result = await app.bot.set_webhook(url=url)
+    result = await bot.set_webhook(url=url)
+    await bot.close()
     return result, url
 
 
 async def delete_webhook_async():
-    app = await get_telegram_app()
-    return await app.bot.delete_webhook()
+    from telegram import Bot
+
+    bot = Bot(token=BOT_TOKEN)
+    result = await bot.delete_webhook()
+    await bot.close()
+    return result
 
 
 async def webhook_info_async():
-    app = await get_telegram_app()
-    return await app.bot.get_webhook_info()
+    from telegram import Bot
+
+    bot = Bot(token=BOT_TOKEN)
+    info = await bot.get_webhook_info()
+    await bot.close()
+    return info
 
 
 def get_base_url(environ):
@@ -63,15 +73,6 @@ def get_base_url(environ):
     host = environ.get("HTTP_X_FORWARDED_HOST") or environ.get("HTTP_HOST", "")
     proto = environ.get("HTTP_X_FORWARDED_PROTO", "https")
     return f"{proto}://{host}"
-
-
-def run_async(coro):
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    try:
-        return loop.run_until_complete(coro)
-    finally:
-        loop.close()
 
 
 def app(environ, start_response):
@@ -96,13 +97,13 @@ def app(environ, start_response):
                 }
             elif path in ("/setwebhook", "/api/setwebhook"):
                 base = get_base_url(environ)
-                result, url = run_async(set_webhook_async(base))
+                result, url = asyncio.run(set_webhook_async(base))
                 data = {"ok": result, "webhook_url": url}
             elif path in ("/deletewebhook", "/api/deletewebhook"):
-                result = run_async(delete_webhook_async())
+                result = asyncio.run(delete_webhook_async())
                 data = {"ok": result}
             elif path in ("/info", "/api/info"):
-                info = run_async(webhook_info_async())
+                info = asyncio.run(webhook_info_async())
                 data = {
                     "url": info.url,
                     "pending_update_count": info.pending_update_count,
@@ -119,7 +120,7 @@ def app(environ, start_response):
             if path in ("/", "/api", "/webhook", "/api/webhook"):
                 payload = json.loads(body)
                 logger.info(f"Webhook update_id: {payload.get('update_id')}")
-                run_async(process_webhook(payload))
+                asyncio.run(process_webhook(payload))
                 data = {"ok": True}
             else:
                 status = "404 Not Found"
